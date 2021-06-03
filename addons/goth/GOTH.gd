@@ -3,16 +3,21 @@ class_name GOTH
 extends Reference
 
 """
-GOTH Test Harness
+GOth Test Harness
 uwu
 """
 
 signal message_logged(message)
 
 const TEST_PREFIX: String = "test"
+const DEFINITION_PREFIX: String = "defn"
+const BDD_SUFFIX: String = "bdd"
 const BASE_TEST_DIRECTORY: String = "res://tests/"
 
 var test_paths: Array = [] # String
+
+var bdd_paths: Array = [] # String
+var definition_paths: Array = [] # String
 
 ###############################################################################
 # Builtin functions                                                           #
@@ -54,8 +59,18 @@ func scan() -> void:
 			var absolute_path: String = "%s/%s" % [dir.get_current_dir(), file_name]
 			if dir.current_is_dir():
 				directories.append(absolute_path)
+
+			if file_name.length() < 4:
+				file_name = dir.get_next()
+				continue
+			
 			if file_name.left(4).to_lower() == TEST_PREFIX:
-				test_paths.append(absolute_path)
+				if file_name.get_extension() == BDD_SUFFIX:
+					bdd_paths.append(absolute_path)
+				else:
+					test_paths.append(absolute_path)
+			elif file_name.left(4).to_lower() == DEFINITION_PREFIX:
+				definition_paths.append(absolute_path)
 			
 			file_name = dir.get_next()
 		
@@ -88,4 +103,6 @@ func run_unit_tests(test_name: String = "") -> void:
 		test_file.run_tests()
 
 func run_bdd_tests(test_name: String = "") -> void:
-	log_message("Not yet implemented")
+	var bdd: BDD = BDD.new()
+	
+	bdd.run(bdd_paths[0])
