@@ -10,14 +10,14 @@ uwu
 signal message_logged(message)
 
 const TEST_PREFIX: String = "test"
-const DEFINITION_PREFIX: String = "defn"
+const STEP_PREFIX: String = "step"
 const BDD_SUFFIX: String = "bdd"
 const BASE_TEST_DIRECTORY: String = "res://tests/"
 
 var test_paths: Array = [] # String
 
 var bdd_paths: Array = [] # String
-var definition_paths: Array = [] # String
+var step_paths: Array = [] # String
 
 ###############################################################################
 # Builtin functions                                                           #
@@ -69,8 +69,8 @@ func scan() -> void:
 					bdd_paths.append(absolute_path)
 				else:
 					test_paths.append(absolute_path)
-			elif file_name.left(4).to_lower() == DEFINITION_PREFIX:
-				definition_paths.append(absolute_path)
+			elif file_name.left(4).to_lower() == STEP_PREFIX:
+				step_paths.append(absolute_path)
 			
 			file_name = dir.get_next()
 		
@@ -103,6 +103,14 @@ func run_unit_tests(test_name: String = "") -> void:
 		test_file.run_tests()
 
 func run_bdd_tests(test_name: String = "") -> void:
+	var step_definitions: Dictionary = {}
+	for step in step_paths:
+		var step_file = load(step).new()
+		step_definitions[step] = step_file.get_method_list()
+
 	var bdd: BDD = BDD.new()
+	bdd.step_definitions = step_definitions
+	bdd.goth = self
 	
-	bdd.run(bdd_paths[0])
+	for path in bdd_paths:
+		bdd.run(path)

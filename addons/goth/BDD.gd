@@ -1,27 +1,16 @@
 class_name BDD
 extends Reference
 
-var goth
-
 class Tuple2:
-	var _v0
-	var _v1
+	var v0
+	var v1
 
-	func _init(v0, v1) -> void:
-		_v0 = v0
-		_v1 = v1
-
-	func g0():
-		return _v0
+	func _init(p0, p1) -> void:
+		v0 = p0
+		v1 = p1
 	
-	func g1():
-		return _v1
-	
-	func s0(value):
-		_v0 = value
-
-	func s1(value):
-		_v1 = value
+	func _to_string() -> String:
+		return "%s: %s" % [v0, v1]
 
 class Result:
 	var _tuple: Tuple2
@@ -31,29 +20,29 @@ class Result:
 
 	func unwrap():
 		# Error
-		if _tuple.g1():
-			AppManager.log_message("Unwrapped an error", true)
+		if _tuple.v1:
+			printerr("Unwrapped an error")
 			return null
 		else:
-			return _tuple.g0()
+			return _tuple.v0
 
 	func unwrap_err() -> String:
-		return _tuple.g1()
+		return _tuple.v1
 
 	func is_ok() -> bool:
-		return not _tuple.g1()
+		return _tuple.v1 == null
 
 	func is_err() -> bool:
-		return not is_ok()
+		return _tuple.v1 != null
 
 	func set_value(value) -> void:
-		_tuple.s0(value)
+		_tuple.v0 = value
 
 	func set_error(value) -> void:
-		_tuple.s1(value)
+		_tuple.v1 = value
 
 class Tokenizer:
-	enum { None = 0, ParseSpace, ParseSymbol, ParseQuotation, ParseBracket }
+	enum { None = 0, ParseSpace, ParseSymbol, ParseQuotation, ParseBracket, ParseIgnore }
 
 	const EXP_END: String = "__exp_end__"
 
@@ -81,7 +70,13 @@ class Tokenizer:
 
 		for i in value.length():
 			var c: String = value[i]
-			if c == '"':
+			if _current_type == ParseIgnore:
+				match c:
+					"\r\n", "\n", ";":
+						_current_type = None
+					_:
+						continue
+			elif c == '"':
 				if _is_escape_character: # This is a double quote literal
 					_token_builder.append(c)
 					_is_escape_character = false
@@ -136,6 +131,8 @@ class Tokenizer:
 						_build_token(result)
 						result.append(EXP_END)
 						_build_token(result)
+					";":
+						_current_type = ParseIgnore
 					_:
 						_current_type = ParseSymbol
 						_token_builder.append(c)
@@ -155,28 +152,79 @@ class Tokenizer:
 		return Result.new(result, error)
 
 class Parser:
-	enum { None = 0, Given, When, Then }
+	enum { None = 0, Scenario, Given, When, Then }
 	var _current_type: int = None
 
 	var _method_builder: PoolStringArray = PoolStringArray()
-
 	var _param_builder: PoolStringArray = PoolStringArray()
 
-	func _build_method(result: Array) -> void:
+	var _expression: Expression = Expression.new()
+
+	var _current_scenario
+
+	var _method_param_mapping: Dictionary = {} # String: Dictionary of String: Array [String]
+	var _params: Array = [] # String
+
+	func _build_method() -> bool:
 		if _method_builder.size() != 0:
-			result.append(_method_builder.join("_"))
+			var method_name: String = _method_builder.join("_")
+			match _current_type:
+				Scenario:
+					_current_scenario = method_name
+					_method_param_mapping[_current_scenario] = {
+						"given": {},
+						"when": {},
+						"then": {}
+					}
+				_:
+					if _param_builder.size() != 0:
+						_build_param()
+					
+					match _current_type:
+						Given:
+							_method_param_mapping[_current_scenario]["given"][method_name] = _params.duplicate()
+						When:
+							_method_param_mapping[_current_scenario]["when"][method_name] = _params.duplicate()
+						Then:
+							_method_param_mapping[_current_scenario]["then"][method_name] = _params.duplicate()
+						_:
+							printerr("Invalid scenario type")
+							return false
+					
+					# Clear params for next method
+					_params.clear()
+
+			# Reset builder
 			_method_builder = PoolStringArray()
 
-	func _build_param(result: Array) -> void:
+			return true
+		
+		printerr("Method builder length is 0")
+		return false
+
+	func _build_param() -> bool:
 		if _param_builder.size() != 0:
-			result.append(_param_builder.join(""))
+			var joined_param: String = _param_builder.join(" ")
+			if _expression.parse(joined_param) == OK:
+				_params.append(_expression.execute())
+			else:
+				# Failed to parse
+				printerr("Failed to parse")
+				return false
+			if _expression.has_execute_failed():
+				# Failed to execute
+				printerr("Failed to execute")
+				return false
 			_param_builder = PoolStringArray()
+			return true
+		# Tried to build an empty param
+		printerr("Param builder length is 0")
+		return false
 
 	func parse(tokens: Array) -> Result:
-		var methods: Array = []
-		var params: Array = []
 		var error
 
+		var param_counter: int = 0
 		var is_param: bool = false
 		
 		if tokens.size() == 0:
@@ -187,9 +235,13 @@ class Parser:
 
 		while true:
 			match token.to_lower():
+				"scenario", "scenario:":
+					if (_current_type != None and _current_type != Then):
+						return Result.new(null, "Scenario clause must be the first clause")
+					_current_type = Scenario
 				"given":
-					if _current_type != None:
-						return Result.new(null, "Given clause must be the first clause")
+					if _current_type != Scenario:
+						return Result.new(null, "Given clause must come directly after Scenario")
 					_current_type = Given
 				"when":
 					if _current_type != Given:
@@ -201,11 +253,24 @@ class Parser:
 					_current_type = Then
 				"(":
 					is_param = true
+					if param_counter > 0:
+						_param_builder.append(token)
+					param_counter += 1
 				")":
-					is_param = false
-					_build_param(params)
+					param_counter -= 1
+					if param_counter == 0:
+						is_param = false
+						if not _build_param():
+							error = "Failed to parse param %s" % _param_builder.join(" ")
+							break
+					else:
+						_param_builder.append(token)
 				Tokenizer.EXP_END, "and":
-					_build_method(methods)
+					# Ignore line break between tests
+					if (_current_type != None and _current_type != Then):
+						if not _build_method():
+							error = "Failed to parse method %s" % _method_builder.join("_")
+							break
 				_:
 					if not is_param:
 						_method_builder.append(token)
@@ -216,13 +281,22 @@ class Parser:
 				break
 			token = tokens.pop_back()
 
+		# Clean up methods if there is no newline at the end of the file
 		if not _method_builder.empty():
-			_build_method(methods)
+			if not _build_method():
+				error = "Failed to parse method %s" % _method_builder.join("_")
 
 		if not _param_builder.empty():
-			error = "Hanging parameter"
+			if not _build_param():
+				error = "Failed to parse param %s" % _param_builder.join(" ")
 
-		return Result.new(Tuple2.new(methods, params), error)
+		if param_counter != 0:
+			error = "Mismatched params"
+
+		return Result.new(_method_param_mapping, error)
+
+var step_definitions: Dictionary
+var goth
 
 ###############################################################################
 # Builtin functions                                                           #
@@ -252,16 +326,57 @@ func run(file_name: String) -> void:
 		var t_result: Result = tokenizer.tokenize(content)
 		if t_result.is_err():
 			goth.log_message("Unable to tokenize %s" % file_name)
+			goth.log_message("%s" % t_result.unwrap_err())
+			return
 		
 		var tokens: Array = t_result.unwrap()
 		
 		var p_result: Result = parser.parse(tokens)
 		if p_result.is_err():
 			goth.log_message("Unable to parse %s" % file_name)
+			goth.log_message("%s" % p_result.unwrap_err())
+			return
 
-		var bdd_data: Tuple2 = p_result.unwrap()
-		var method_list: Array = bdd_data.g0()
-		var param_list: Array = bdd_data.g1()
-		
-		print(method_list)
-		print(param_list)
+		var bdd_data: Dictionary = p_result.unwrap()
+
+		for scen_name in bdd_data.keys():
+			var usable_step_definitions: Dictionary = {} # Dictionary method name: file name
+			var needed_step_definitions: Array = [] # String
+			
+			var scenario_data: Dictionary = bdd_data[scen_name]
+
+			for id in ["given", "when", "then"]:
+				var id_data: Dictionary = scenario_data[id]
+
+				for m_name in id_data.keys():
+					var found_method: bool = false
+					for f_name in step_definitions.keys():
+						for step_def in step_definitions[f_name]:
+							if step_def["name"] == m_name:
+								usable_step_definitions[m_name] = f_name
+								found_method = true
+								break
+						if found_method:
+							break
+					if found_method:
+						break
+					else:
+						needed_step_definitions.append(m_name)
+			
+			# Data is missing, cannot continue processing Scenario
+			if not needed_step_definitions.empty():
+				goth.log_message("Missing step definitions for %s" % str(needed_step_definitions))
+				return
+			
+			var context: SceneTree = SceneTree.new()
+			var file_refs: Dictionary = {} # File name to loaded script
+			
+			for m_name in usable_step_definitions.keys():
+				var f_name: String = usable_step_definitions[m_name]
+				file_refs[f_name] = load(f_name).new()
+			
+			for id in ["given", "when", "then"]:
+				var id_data: Dictionary = scenario_data[id] # String: Array [String]
+				
+				for m_name in id_data.keys():
+					file_refs[usable_step_definitions[m_name]].callv(m_name, id_data[m_name])
